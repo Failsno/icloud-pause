@@ -1,12 +1,12 @@
 #!/bin/bash
 # <xbar.title>iCloud Pause</xbar.title>
-# <xbar.desc>Temporarily freeze iCloud sync daemons (bird, cloudd) with an auto-resume timer.</xbar.desc>
-# <xbar.version>1.0</xbar.version>
+# <xbar.desc>Freeze iCloud sync daemons (bird, cloudd): timed pause (4/8/12/24h) or indefinite, with resume.</xbar.desc>
+# <xbar.version>1.1</xbar.version>
 #
 # Works in xbar and SwiftBar. Refreshes every 10s (see filename).
 # Pausing sends SIGSTOP to bird/cloudd; resuming sends SIGCONT.
-# State file holds the resume deadline (epoch seconds) and the boot time,
-# so a reboot clears a stale pause.
+# State file holds the resume deadline (epoch seconds, or "forever") and the
+# boot time, so a reboot clears a stale pause (including an indefinite one).
 
 SELF="$0"
 STATE="$HOME/.icloud-pause.state"
@@ -28,8 +28,12 @@ procs_stopped() {
 # --- actions invoked from the menu ---
 case "$1" in
   pause)
-    hours="${2:-4}"
-    until=$(( $(/bin/date +%s) + hours * 3600 ))
+    if [ "$2" = "forever" ]; then
+      until="forever"
+    else
+      hours="${2:-4}"
+      until=$(( $(/bin/date +%s) + hours * 3600 ))
+    fi
     printf '%s\n%s\n' "$until" "$BOOT" > "$STATE"
     stop_procs
     exit 0
@@ -56,8 +60,8 @@ if [ -n "$until" ] && [ -n "$BOOT" ] && [ "$saved_boot" != "$BOOT" ]; then
   until=""
 fi
 
-# Timer expired: resume.
-if [ -n "$until" ] && [ "$now" -ge "$until" ]; then
+# Timer expired: resume. (An indefinite pause never expires.)
+if [ -n "$until" ] && [ "$until" != "forever" ] && [ "$now" -ge "$until" ]; then
   resume_procs
   /bin/rm -f "$STATE"
   until=""
@@ -68,9 +72,24 @@ menu_options() {
   for h in 4 8 12 24; do
     echo "$label $h hours | bash=\"$SELF\" param1=pause param2=$h terminal=false refresh=true"
   done
+  echo "Pause indefinitely | bash=\"$SELF\" param1=pause param2=forever terminal=false refresh=true"
 }
 
-if [ -n "$until" ]; then
+resume_item() {
+  echo "Resume / unpause sync | bash=\"$SELF\" param1=resume terminal=false refresh=true"
+}
+
+if [ "$until" = "forever" ]; then
+  # Indefinite pause. launchd may have respawned a daemon, so re-apply the stop.
+  stop_procs
+  echo "☁️⏸ ∞"
+  echo "---"
+  echo "iCloud sync paused indefinitely"
+  echo "Stays paused until you resume (or reboot)"
+  resume_item
+  echo "---"
+  menu_options "Switch to timer:"
+elif [ -n "$until" ]; then
   # Timer active. launchd may have respawned a daemon, so re-apply the stop.
   stop_procs
   rem=$(( until - now ))
@@ -81,7 +100,7 @@ if [ -n "$until" ]; then
   echo "---"
   echo "iCloud sync paused"
   echo "Auto-resumes $resume_at"
-  echo "Resume now | bash=\"$SELF\" param1=resume terminal=false refresh=true"
+  resume_item
   echo "---"
   menu_options "Restart timer:"
 elif procs_stopped; then
@@ -89,13 +108,14 @@ elif procs_stopped; then
   echo "☁️⏸"
   echo "---"
   echo "iCloud sync paused (no timer)"
-  echo "Resume now | bash=\"$SELF\" param1=resume terminal=false refresh=true"
+  resume_item
   echo "---"
   menu_options "Pause for"
 else
   echo "☁️"
   echo "---"
   echo "iCloud sync running"
+  echo "Resume / unpause sync | disabled=true"
   echo "---"
   menu_options "Pause for"
 fi
